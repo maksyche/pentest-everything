@@ -1,31 +1,20 @@
 #!/usr/bin/env python3
-import os
-import subprocess
 import argparse
-import re
 import logging
+import os
+import re
 
 USAGE = "python3 toc_generator.py"
 DESCRIPTION = """\
 Generates tables of contents for markdown files in the current folder. \
 Add regex patterns for files the script should ignore to the .tocignore file in the current folder.
 """
-NO_GH_MD_TOC_SCRIPT_ERROR = """\
-Cannot find the Github Markdown TOC bash script (./gh-md-toc). \
-Download it to the current folder using the following command:
-wget https://raw.githubusercontent.com/ekalinin/github-markdown-toc/master/gh-md-toc && chmod +x ./gh-md-toc
-"""
 
 IGNORE_FILE_NAME = ".tocignore"
-GH_MD_TOC_FILE_NAME = "./gh-md-toc"
 LVL2_HEADING_PATTERN = re.compile("(?m)^#{2}(?!#)(.*)")
 
 
 def run():
-    if not os.path.exists(GH_MD_TOC_FILE_NAME):
-        logging.fatal(NO_GH_MD_TOC_SCRIPT_ERROR)
-        return
-
     logging.info("Generating tables of contents...")
     filenames = get_filenames()
 
@@ -42,24 +31,104 @@ def run():
 
 def generate_toc(filename):
     with open(filename, mode="r+") as file:
-        content = file.read().splitlines(True)
-        process = subprocess.Popen([GH_MD_TOC_FILE_NAME, '-'],
-                                   stdin=subprocess.PIPE,
-                                   stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE)
+        content_lines = file.read().splitlines(True)
 
-        # Pass the content of the file without the first line (root heading)
-        stdout, stderr = process.communicate(input=''.join(content[1:]).encode())
-
-        if stderr:
-            logging.error("Error preparing a table of contents for the file %s: %s", filename, stderr)
+        if not content_lines[0].startswith("#"):
+            logging.warning("File " + filename + " doesn't start with a header. Skipping...")
             return
 
-        toc_str = stdout.decode('unicode_escape')  # Fixes all new lines and tabs
+        first_header_index = -1
+        for i in range(1, len(content_lines)):
+            if LVL2_HEADING_PATTERN.match(content_lines[i]):
+                first_header_index = i
+                break
+            elif content_lines[i].startswith('#'):
+                logging.warning(
+                    "File " + filename + " has another header between lvl1 and the first lvl2 headers. Skipping...")
+                return
+
+        if first_header_index == -1:
+            logging.warning("File " + filename + " doesn't have lvl2 headers. Skipping...")
+            return
+
+        toc_str = ''
+        code_block = False
+        for line in content_lines[1:]:
+
+            # Marks the start and end of a code block
+            if line.startswith("```"):
+                if code_block:
+                    code_block = False
+                else:
+                    code_block = True
+
+            # Handles the header line
+            elif line.startswith('#'):
+
+                # No lvl7 headers exist
+                if line.startswith('#######'):
+                    continue
+
+                # No headers can exist inside code blocks
+                if code_block:
+                    continue
+
+                # Adds tabulation according to the level of the header
+                for i in range(2, len(line)):
+                    if line[i] == '#':
+                        toc_str += '    '
+                    else:
+                        break
+
+                # Adds the header's label
+                line = line.lstrip('#').strip(' \n')
+                toc_str += '* [' + line + ']'
+
+                # Generates an anchor for the header
+                anchor_list = list()
+                last_underscore_i = -1
+                to_remove = list()
+                inline_code = False
+                for i in range(0, len(line)):
+
+                    # Replaces all spaces with hyphens
+                    if line[i] == ' ' or line[i] == '-':
+                        anchor_list.append('-')
+
+                    # Marks a start of an inline code piece
+                    elif line[i] == '`':
+                        if inline_code:
+                            inline_code = False
+                        else:
+                            inline_code = True
+
+                    # Marks for removal an even number of underscores if outside the inline code piece
+                    elif line[i] == '_':
+                        if not inline_code:
+                            if last_underscore_i == -1:
+                                last_underscore_i = i
+                                anchor_list.append('_')
+                            else:
+                                to_remove.append(last_underscore_i)
+                                last_underscore_i = -1
+                        else:
+                            anchor_list.append('_')
+
+                    # Simply adds other alphanumeric chars lowercased
+                    elif line[i].isalnum():
+                        anchor_list.append(line[i].lower())
+
+                # Removes marked characters
+                for i in to_remove:
+                    del anchor_list[i]
+
+                # Adds generated anchor to the table
+                toc_str += '(#' + ''.join(anchor_list) + ')\n'
+
         logging.debug("Prepared the table of contents for the file %s:\n%s", filename, toc_str)
 
-        lvl2_heading_index = next(i for i, line in enumerate(content) if LVL2_HEADING_PATTERN.match(line))
-        content_with_toc = content[0] + toc_str + os.linesep + ''.join(content[lvl2_heading_index:])
+        # Replaces everything between lvl1 and first lvl2 headers with the table of contents
+        content_with_toc = content_lines[0] + toc_str + os.linesep + ''.join(content_lines[first_header_index:])
 
         file.seek(0)
         file.write(content_with_toc)
