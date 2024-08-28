@@ -1,3 +1,0 @@
-# Privilege escalation
-- [Linux privesc](/privesc/linux)
-- [Windows privesc](/privesc/windows)
